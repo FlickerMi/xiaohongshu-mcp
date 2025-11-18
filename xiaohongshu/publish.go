@@ -260,7 +260,8 @@ func submitPublish(page *rod.Page, title, content string, tags []string) error {
 	submitButton := page.MustElement("div.submit div.d-button-content")
 	submitButton.MustClick()
 
-	time.Sleep(3 * time.Second)
+	// time.Sleep(3 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	return nil
 }
