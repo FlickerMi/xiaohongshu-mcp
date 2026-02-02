@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
-	"strings"
-	"time"
 )
 
 // MCP 工具处理函数
@@ -35,7 +37,7 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 	} else {
 		resultText = fmt.Sprintf("❌ 未登录\n\n请使用 get_login_qrcode 工具获取二维码进行登录。")
 	}
-	
+
 	return &MCPToolResult{
 		Content: []MCPContent{{
 			Type: "text",
@@ -130,14 +132,18 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 		}
 	}
 
-	logrus.Infof("MCP: 发布内容 - 标题: %s, 图片数量: %d, 标签数量: %d", title, len(imagePaths), len(tags))
+	// 解析定时发布参数
+	scheduleAt, _ := args["schedule_at"].(string)
+
+	logrus.Infof("MCP: 发布内容 - 标题: %s, 图片数量: %d, 标签数量: %d, 定时: %s", title, len(imagePaths), len(tags), scheduleAt)
 
 	// 构建发布请求
 	req := &PublishRequest{
-		Title:   title,
-		Content: content,
-		Images:  imagePaths,
-		Tags:    tags,
+		Title:      title,
+		Content:    content,
+		Images:     imagePaths,
+		Tags:       tags,
+		ScheduleAt: scheduleAt,
 	}
 
 	// 执行发布
@@ -187,14 +193,18 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 		}
 	}
 
-	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d", title, len(tags))
+	// 解析定时发布参数
+	scheduleAt, _ := args["schedule_at"].(string)
+
+	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d, 定时: %s", title, len(tags), scheduleAt)
 
 	// 构建发布请求
 	req := &PublishVideoRequest{
-		Title:   title,
-		Content: content,
-		Video:   videoPath,
-		Tags:    tags,
+		Title:      title,
+		Content:    content,
+		Video:      videoPath,
+		Tags:       tags,
+		ScheduleAt: scheduleAt,
 	}
 
 	// 执行发布
@@ -336,9 +346,67 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s", feedID)
+	loadAll := false
+	if raw, ok := args["load_all_comments"]; ok {
+		switch v := raw.(type) {
+		case bool:
+			loadAll = v
+		case string:
+			if parsed, err := strconv.ParseBool(v); err == nil {
+				loadAll = parsed
+			}
+		case float64:
+			loadAll = v != 0
+		}
+	}
 
-	result, err := s.xiaohongshuService.GetFeedDetail(ctx, feedID, xsecToken)
+	// 解析评论配置参数，如果未提供则使用默认值
+	config := xiaohongshu.DefaultCommentLoadConfig()
+
+	if raw, ok := args["click_more_replies"]; ok {
+		switch v := raw.(type) {
+		case bool:
+			config.ClickMoreReplies = v
+		case string:
+			if parsed, err := strconv.ParseBool(v); err == nil {
+				config.ClickMoreReplies = parsed
+			}
+		}
+	}
+
+	if raw, ok := args["max_replies_threshold"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			config.MaxRepliesThreshold = int(v)
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				config.MaxRepliesThreshold = parsed
+			}
+		case int:
+			config.MaxRepliesThreshold = v
+		}
+	}
+
+	if raw, ok := args["max_comment_items"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			config.MaxCommentItems = int(v)
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				config.MaxCommentItems = parsed
+			}
+		case int:
+			config.MaxCommentItems = v
+		}
+	}
+
+	if raw, ok := args["scroll_speed"].(string); ok && raw != "" {
+		config.ScrollSpeed = raw
+	}
+
+	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
+
+	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -559,6 +627,80 @@ func (s *AppServer) handlePostComment(ctx context.Context, args map[string]inter
 		Content: []MCPContent{{
 			Type: "text",
 			Text: resultText,
+		}},
+	}
+}
+
+// handleReplyComment 处理回复评论
+func (s *AppServer) handleReplyComment(ctx context.Context, args map[string]interface{}) *MCPToolResult {
+	logrus.Info("MCP: 回复评论")
+
+	// 解析参数
+	feedID, ok := args["feed_id"].(string)
+	if !ok || feedID == "" {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "回复评论失败: 缺少feed_id参数",
+			}},
+			IsError: true,
+		}
+	}
+
+	xsecToken, ok := args["xsec_token"].(string)
+	if !ok || xsecToken == "" {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "回复评论失败: 缺少xsec_token参数",
+			}},
+			IsError: true,
+		}
+	}
+
+	commentID, _ := args["comment_id"].(string)
+	userID, _ := args["user_id"].(string)
+	if commentID == "" && userID == "" {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "回复评论失败: 缺少comment_id或user_id参数",
+			}},
+			IsError: true,
+		}
+	}
+
+	content, ok := args["content"].(string)
+	if !ok || content == "" {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "回复评论失败: 缺少content参数",
+			}},
+			IsError: true,
+		}
+	}
+
+	logrus.Infof("MCP: 回复评论 - Feed ID: %s, Comment ID: %s, User ID: %s, 内容长度: %d", feedID, commentID, userID, len(content))
+
+	// 回复评论
+	result, err := s.xiaohongshuService.ReplyCommentToFeed(ctx, feedID, xsecToken, commentID, userID, content)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "回复评论失败: " + err.Error(),
+			}},
+			IsError: true,
+		}
+	}
+
+	// 返回成功结果
+	responseText := fmt.Sprintf("评论回复成功 - Feed ID: %s, Comment ID: %s, User ID: %s", result.FeedID, result.TargetCommentID, result.TargetUserID)
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: responseText,
 		}},
 	}
 }
