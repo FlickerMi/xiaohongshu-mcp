@@ -35,8 +35,8 @@ jobs:
         push: true
         platforms: linux/amd64
         tags: |
-          xpzouying/xiaohongshu-mcp:${{ github.event.inputs.version }}
-          xpzouying/xiaohongshu-mcp:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/xiaohongshu-mcp:${{ github.event.inputs.version }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/xiaohongshu-mcp:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -48,7 +48,7 @@ jobs:
         push: true
         platforms: linux/arm64
         tags: |
-          xpzouying/xiaohongshu-mcp:${{ github.event.inputs.version }}-arm64
-          xpzouying/xiaohongshu-mcp:latest-arm64
+          ${{ secrets.DOCKERHUB_USERNAME }}/xiaohongshu-mcp:${{ github.event.inputs.version }}-arm64
+          ${{ secrets.DOCKERHUB_USERNAME }}/xiaohongshu-mcp:latest-arm64
         cache-from: type=gha
         cache-to: type=gha,mode=max
